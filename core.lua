@@ -118,7 +118,7 @@ ns.PROVIDERS = {} ---@type table<CandyBucketsDataProvider, true?>
 ---@type table<number, boolean>
 ns.COMPLETED_QUESTS = setmetatable({}, {
 	__index = function(self, questID)
-		local isCompleted = C_QuestLog.IsQuestFlaggedCompleted(questID)
+		local isCompleted = (C_QuestLog and C_QuestLog.IsQuestFlaggedCompleted or IsQuestFlaggedCompleted)(questID)
 		if isCompleted then
 			self[questID] = isCompleted
 		end
@@ -200,11 +200,15 @@ do
 		1550, -- The Shadowlands
 		1978, -- Dragon Isles
 		2274, -- Khaz Algar
+		1414, -- Kalimdor (Classic)
+		1415, -- Eastern Kingdoms (Classic)
+		1945, -- Outland (Classic)
 	}) do
 		CheckMapRecursively(uiMapID, GetChildren, 10)
 	end
 
 	AddParentChildMapIDs(108, 111) -- Terokkar Forest -> Shattrath City
+	AddParentChildMapIDs(1952, 1955) -- Terokkar Forest -> Shattrath City (Classic)
 	AddParentChildMapIDs(539, 582) -- Shadowmoon Valley -> Lunarfall
 	AddParentChildMapIDs(525, 590) -- Frostfire Ridge -> Frostwall
 	AddParentChildMapIDs(1978, 2151) -- Dragon Isles -> The Forbidden Reach
@@ -924,7 +928,7 @@ addon:RegisterEvent("PLAYER_LOGIN")
 ---@type fun(): boolean
 local InjectDataProviders do
 	local loadedWorldMap = false
-	local loadedFlightMap = false
+	local loadedFlightMap = WOW_PROJECT_ID ~= WOW_PROJECT_MAINLINE -- no flight map frame on Classic
 
 	local function OnLoad(self)
 		local dataProvider = CreateFromMixins(CandyBucketsDataProviderMixin)
@@ -938,7 +942,9 @@ local InjectDataProviders do
 	function InjectDataProviders()
 		if WorldMapFrame and not loadedWorldMap then
 			loadedWorldMap = true
-			hooksecurefunc(WorldMapMixin, "OnLoad", OnLoad)
+			if WorldMapMixin then
+				hooksecurefunc(WorldMapMixin, "OnLoad", OnLoad)
+			end
 			OnLoad(WorldMapFrame)
 		end
 		if FlightMapFrame and not loadedFlightMap then
@@ -1105,6 +1111,17 @@ function addon:CheckCalendar()
 	end
 
 	if numLoadedRightNow > 0 then
+		Output("|cffFFFFFF%s|r has |cffFFFFFF%d|r locations for you to visit.", addonName, #ns.QUESTS)
+	end
+end
+
+-- Classic clients don't report holidays through the calendar the way retail does, so load Hallow's End by date.
+function addon:LoadClassicEvents()
+	local t = date("*t")
+	local active = (t.month == 10 and t.day >= 17) or (t.month == 11 and t.day <= 2)
+	if active and addon:CanLoadModule("hallow") then
+		addon:LoadModule("hallow")
+		addon:RegisterEvent("QUEST_TURNED_IN")
 		Output("|cffFFFFFF%s|r has |cffFFFFFF%d|r locations for you to visit.", addonName, #ns.QUESTS)
 	end
 end
@@ -1380,7 +1397,11 @@ function addon:PLAYER_LOGIN(event)
 		ns.FACTION = 3
 	end
 
-	addon:QueryCalendar(true)
+	if WOW_PROJECT_ID ~= WOW_PROJECT_MAINLINE then
+		addon:LoadClassicEvents()
+	else
+		addon:QueryCalendar(true)
+	end
 end
 
 function addon:CALENDAR_UPDATE_EVENT()
@@ -1410,7 +1431,10 @@ end
 function addon:QUEST_TURNED_IN(event, questID)
 	ns.COMPLETED_QUESTS[questID] = true
 
-	local success, info, checkedNumQuestPOIs = addon:IsDeliveryLocationExpected(questID)
+	local ok, success, info, checkedNumQuestPOIs = pcall(addon.IsDeliveryLocationExpected, addon, questID)
+	if not ok then
+		success, info, checkedNumQuestPOIs = nil, nil, nil
+	end
 	if DEBUG_LOCATION then
 		Output("|cffFFFFFF%s|r quest |cffFFFFFF%d|r turned in%s", addonName, questID, info and ":" or ".")
 		if info then
